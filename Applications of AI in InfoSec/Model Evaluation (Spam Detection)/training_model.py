@@ -1,4 +1,7 @@
-!pip -q install nltk pandas numpy scikit-learn joblib requests
+# ✅ SINGLE NOTEBOOK CELL
+# - Includes your full spam model code (download → preprocess → train → save → test)
+# - Then uploads the saved .joblib to the portal at: http://HTB-IP:8000/
+# - Tries common upload endpoints and prints the response (including flag if present)
 
 import os
 import re
@@ -13,49 +16,63 @@ import joblib
 from nltk.tokenize import word_tokenize
 from nltk.corpus import stopwords
 from nltk.stem import PorterStemmer
+
 from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.model_selection import GridSearchCV
 from sklearn.naive_bayes import MultinomialNB
 from sklearn.pipeline import Pipeline
 
+# ----------------------------
+# Download and extract dataset
+# ----------------------------
 def download_dataset(url, extract_to):
-    print(f"Downloading dataset from {url} ...")
-    response = requests.get(url)
+    response = requests.get(url, timeout=60)
     if response.status_code == 200:
-        print("[+] Download successful!")
+        print("Download successful")
         with zipfile.ZipFile(io.BytesIO(response.content)) as z:
             z.extractall(extract_to)
-        print("[+] Extraction completed.")
+            print("Extraction successful")
     else:
-        print(f"[-] Failed to download dataset: {response.status_code}")
+        raise RuntimeError(f"Failed to download the dataset. Status={response.status_code}")
 
-
+# ----------------------------
+# Preprocess messages
+# ----------------------------
 def preprocess_message(message, stop_words, stemmer):
-    message = message.lower()
+    message = str(message).lower()
     message = re.sub(r"[^a-z\s$!]", "", message)
     tokens = word_tokenize(message)
     tokens = [word for word in tokens if word not in stop_words]
     tokens = [stemmer.stem(word) for word in tokens]
     return " ".join(tokens)
 
+# ----------------------------
+# Load and preprocess dataset
+# ----------------------------
 def load_and_preprocess_data(file_path):
-    print("[*] Loading dataset...")
     df = pd.read_csv(file_path, sep="\t", header=None, names=["label", "message"])
     df.drop_duplicates(inplace=True)
-    print(f"[+] Loaded {len(df)} messages.")
 
+    # Your code used punkt_tab; many environments use punkt.
+    # We'll try punkt_tab, then fallback to punkt to keep it robust.
+    try:
+        nltk.download("punkt_tab", quiet=True)
+    except Exception:
+        pass
     nltk.download("punkt", quiet=True)
     nltk.download("stopwords", quiet=True)
+
     stop_words = set(stopwords.words("english"))
     stemmer = PorterStemmer()
 
-    print("[*] Preprocessing text messages...")
-    df["message"] = df["message"].apply(lambda x: preprocess_message(x, stop_words, stemmer))
+    df["message"] = df["message"].astype(str).apply(lambda x: preprocess_message(x, stop_words, stemmer))
     df["label"] = df["label"].apply(lambda x: 1 if x == "spam" else 0)
 
-    print("[+] Preprocessing done.")
     return df
 
+# ----------------------------
+# Train and evaluate the model
+# ----------------------------
 def train_model(df):
     X = df["message"]
     y = df["label"]
@@ -66,61 +83,113 @@ def train_model(df):
         ("classifier", MultinomialNB())
     ])
 
-    param_grid = {"classifier__alpha": [0.01, 0.1, 0.2, 0.5, 1.0]}
-    grid_search = GridSearchCV(pipeline, param_grid, cv=5, scoring="f1")
+    param_grid = {"classifier__alpha": [0.01, 0.1, 0.15, 0.2, 0.25, 0.5, 0.75, 1.0]}
+    grid_search = GridSearchCV(pipeline, param_grid, cv=5, scoring="f1", n_jobs=-1)
     grid_search.fit(X, y)
 
     best_model = grid_search.best_estimator_
-    print("[+] Best Model Parameters:", grid_search.best_params_)
-    print("[+] Model training complete.")
+    print("Best model parameters:", grid_search.best_params_)
+
     return best_model
 
-def save_model(model, filename="spam_detection_model.joblib"):
+# ----------------------------
+# Save/load model
+# ----------------------------
+def save_model(model, filename):
     joblib.dump(model, filename)
-    print(f"[+] Model saved as {filename}")
+    print(f"Model saved to {filename}")
 
-def load_model(filename="spam_detection_model.joblib"):
+def load_model(filename):
     return joblib.load(filename)
 
+# ----------------------------
+# Predict new messages
+# ----------------------------
 def predict_messages(model, messages):
     predictions = model.predict(messages)
     probabilities = model.predict_proba(messages)
 
-    print("\n" + "="*60)
-    print("📩 Prediction Results")
-    print("="*60)
     for i, msg in enumerate(messages):
         prediction = "Spam" if predictions[i] == 1 else "Not-Spam"
-        spam_prob = probabilities[i][1]
-        ham_prob = probabilities[i][0]
+        spam_probability = probabilities[i][1]
+        ham_probability = probabilities[i][0]
 
-        print(f"\nMessage: {msg}")
+        print(f"Message: {msg}")
         print(f"Prediction: {prediction}")
-        print(f"Spam Probability: {spam_prob:.2f}")
-        print(f"Not-Spam Probability: {ham_prob:.2f}")
-    print("="*60)
+        print(f"Spam Probability: {spam_probability:.2f}")
+        print(f"Not-Spam Probability: {ham_probability:.2f}")
+        print("-" * 50)
 
+# ----------------------------
+# Upload model to portal
+# ----------------------------
+def upload_model(model_path, base_url="http://HTB-IP:8000"):
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"Model file not found: {os.path.abspath(model_path)}")
 
-if __name__ == "__main__":
-    # Replace with your actual HTB IP and Port
-    DATASET_URL = "http://HTB-IP:8001/sms_spam_collection.zip"
-    EXTRACT_PATH = "sms_spam_collection"
+    endpoints = ["/api/upload", "/upload", "/api/submit", "/submit"]
+    s = requests.Session()
 
-    download_dataset(DATASET_URL, EXTRACT_PATH)
+    for ep in endpoints:
+        url = base_url.rstrip("/") + ep
+        try:
+            with open(model_path, "rb") as f:
+                r = s.post(url, files={"model": f}, timeout=60)
 
-    dataset_path = os.path.join(EXTRACT_PATH, "SMSSpamCollection")
-    df = load_and_preprocess_data(dataset_path)
+            print(f"\n==> POST {url}")
+            print("Status:", r.status_code)
 
-    model = train_model(df)
-    save_model(model)
+            # Try JSON first
+            try:
+                data = r.json()
+                print(json.dumps(data, indent=2))
+                if r.status_code < 400:
+                    return data
+            except Exception:
+                text = (r.text or "")[:2000]
+                print(text)
+                # If it looks successful, stop
+                if r.status_code < 400 and ("flag" in text.lower() or "successful" in text.lower()):
+                    return text
 
-    new_messages = [
-        "Congratulations! You've won a $1000 Walmart gift card. Go to http://bit.ly/1234 to claim now.",
-        "Hey, are we still meeting up for lunch today?",
-        "Urgent! Your account has been compromised. Verify your details here: www.fakebank.com/verify",
-        "Reminder: Your appointment is scheduled for tomorrow at 10am.",
-        "FREE entry in a weekly competition to win an iPad. Just text WIN to 80085 now!"
-    ]
+        except Exception as e:
+            print(f"\n==> POST {url} ERROR: {repr(e)}")
 
-    loaded_model = load_model()
-    predict_messages(loaded_model, new_messages)
+    print("\n[-] No endpoint returned a successful response. Try /upload in browser or confirm the correct port/path.")
+    return None
+
+# ============================
+# RUN PIPELINE (single cell)
+# ============================
+
+# Dataset URL and extraction path
+dataset_url = "https://archive.ics.uci.edu/static/public/228/sms+spam+collection.zip"
+extract_path = "sms_spam_collection"
+
+# Download and prepare dataset
+download_dataset(dataset_url, extract_path)
+dataset_path = os.path.join(extract_path, "SMSSpamCollection")
+df = load_and_preprocess_data(dataset_path)
+
+# Train model
+model = train_model(df)
+
+# Save model
+MODEL_FILE = "spam_detection_model.joblib"
+save_model(model, MODEL_FILE)
+
+# Example usage
+new_messages = [
+    "Congratulations! You've won a $1000 Walmart gift card. Go to http://bit.ly/1234 to claim now.",
+    "Hey, are we still meeting up for lunch today?",
+    "Urgent! Your account has been compromised. Verify your details here: www.fakebank.com/verify",
+    "Reminder: Your appointment is scheduled for tomorrow at 10am.",
+    "FREE entry in a weekly competition to win an iPad. Just text WIN to 80085 now!",
+]
+
+# Load and predict
+loaded_model = load_model(MODEL_FILE)
+predict_messages(loaded_model, new_messages)
+
+# Upload to evaluator (port 8000)
+upload_model(MODEL_FILE, base_url="http://HTB-IP:8000")
