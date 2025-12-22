@@ -1,0 +1,3 @@
+run the training_model.py
+it will generate "spam_detection_model.joblib
+upload it in the target.
