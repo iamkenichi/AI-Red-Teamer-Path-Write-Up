@@ -1,8 +1,3 @@
-# ✅ SINGLE NOTEBOOK CELL
-# - Includes your full spam model code (download → preprocess → train → save → test)
-# - Then uploads the saved .joblib to the portal at: http://HTB-IP:8000/
-# - Tries common upload endpoints and prints the response (including flag if present)
-
 import os
 import re
 import nltk
