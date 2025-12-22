@@ -1,0 +1,3 @@
+- run training_model.py
+- it will generate network_anomaly_detection_model.joblib
+- upload in the target
