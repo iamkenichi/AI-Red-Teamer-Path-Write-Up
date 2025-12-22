@@ -1,49 +1,60 @@
+import os
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix, classification_report
-import seaborn as sns
-import matplotlib.pyplot as plt
+import requests
 import joblib
 
-# Set the file path to the dataset
-file_path = r'KDD+.txt'
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import (
+    accuracy_score, precision_score, recall_score, f1_score,
+    confusion_matrix, classification_report
+)
 
-# Define the column names corresponding to the NSL-KDD dataset
+# ---------------------------
+# CONFIG
+# ---------------------------
+file_path = r"KDDTrain+.txt"
+model_filename = "network_anomaly_detection_model.joblib"
+upload_url = "http://10.129.105.42:8001/upload"  # <-- web form endpoint you specified
+
+# NSL-KDD columns
 columns = [
-    'duration', 'protocol_type', 'service', 'flag', 'src_bytes', 'dst_bytes', 
-    'land', 'wrong_fragment', 'urgent', 'hot', 'num_failed_logins', 'logged_in', 
-    'num_compromised', 'root_shell', 'su_attempted', 'num_root', 'num_file_creations', 
-    'num_shells', 'num_access_files', 'num_outbound_cmds', 'is_host_login', 'is_guest_login', 
-    'count', 'srv_count', 'serror_rate', 'srv_serror_rate', 'rerror_rate', 'srv_rerror_rate', 
-    'same_srv_rate', 'diff_srv_rate', 'srv_diff_host_rate', 'dst_host_count', 'dst_host_srv_count', 
-    'dst_host_same_srv_rate', 'dst_host_diff_srv_rate', 'dst_host_same_src_port_rate', 
-    'dst_host_srv_diff_host_rate', 'dst_host_serror_rate', 'dst_host_srv_serror_rate', 
-    'dst_host_rerror_rate', 'dst_host_srv_rerror_rate', 'attack', 'level'
+    'duration','protocol_type','service','flag','src_bytes','dst_bytes',
+    'land','wrong_fragment','urgent','hot','num_failed_logins','logged_in',
+    'num_compromised','root_shell','su_attempted','num_root','num_file_creations',
+    'num_shells','num_access_files','num_outbound_cmds','is_host_login','is_guest_login',
+    'count','srv_count','serror_rate','srv_serror_rate','rerror_rate','srv_rerror_rate',
+    'same_srv_rate','diff_srv_rate','srv_diff_host_rate','dst_host_count','dst_host_srv_count',
+    'dst_host_same_srv_rate','dst_host_diff_srv_rate','dst_host_same_src_port_rate',
+    'dst_host_srv_diff_host_rate','dst_host_serror_rate','dst_host_srv_serror_rate',
+    'dst_host_rerror_rate','dst_host_srv_rerror_rate','attack','level'
 ]
 
+# ---------------------------
+# LOAD DATA
+# ---------------------------
+if not os.path.exists(file_path):
+    raise FileNotFoundError(f"Dataset not found: {os.path.abspath(file_path)}")
 
-# Read the combined NSL-KDD dataset into a DataFrame
-df = pd.read_csv(file_path, names=columns)
+df = pd.read_csv(file_path, names=columns, header=None)
+print("[+] Rows:", len(df))
+print(df.head(3))
 
-print(df.head())
+if len(df) < 1000:
+    raise RuntimeError("Dataset too small — wrong file? (You should have ~125k rows for KDDTrain+.)")
 
-
-# Binary classification target
-# Maps normal traffic to 0 and any type of attack to 1
+# ---------------------------
+# LABELS (your mapping)
+# ---------------------------
 df['attack_flag'] = df['attack'].apply(lambda a: 0 if a == 'normal' else 1)
 
-# Multi-class classification target categories
-dos_attacks = ['apache2', 'back', 'land', 'neptune', 'mailbomb', 'pod', 
-               'processtable', 'smurf', 'teardrop', 'udpstorm', 'worm']
-probe_attacks = ['ipsweep', 'mscan', 'nmap', 'portsweep', 'saint', 'satan']
-privilege_attacks = ['buffer_overflow', 'loadmdoule', 'perl', 'ps', 
-                     'rootkit', 'sqlattack', 'xterm']
-access_attacks = ['ftp_write', 'guess_passwd', 'http_tunnel', 'imap', 
-                  'multihop', 'named', 'phf', 'sendmail', 'snmpgetattack', 
-                  'snmpguess', 'spy', 'warezclient', 'warezmaster', 
-                  'xclock', 'xsnoop']
+dos_attacks = ['apache2','back','land','neptune','mailbomb','pod','processtable','smurf','teardrop','udpstorm','worm']
+probe_attacks = ['ipsweep','mscan','nmap','portsweep','saint','satan']
+# NOTE: your original code had 'loadmdoule' typo; keep it if you want EXACT, but it weakens mapping.
+privilege_attacks = ['buffer_overflow','loadmdoule','perl','ps','rootkit','sqlattack','xterm']
+access_attacks = ['ftp_write','guess_passwd','http_tunnel','imap','multihop','named','phf','sendmail',
+                  'snmpgetattack','snmpguess','spy','warezclient','warezmaster','xclock','xsnoop']
 
 def map_attack(attack):
     if attack in dos_attacks:
@@ -57,102 +68,76 @@ def map_attack(attack):
     else:
         return 0
 
-# Assign multi-class category to each row
 df['attack_map'] = df['attack'].apply(map_attack)
 
-# Encoding categorical variables
+# ---------------------------
+# FEATURES (your encoding)
+# ---------------------------
 features_to_encode = ['protocol_type', 'service']
 encoded = pd.get_dummies(df[features_to_encode])
 
-# Numeric features that capture various statistical properties of the traffic
 numeric_features = [
-    'duration', 'src_bytes', 'dst_bytes', 'wrong_fragment', 'urgent', 'hot', 
-    'num_failed_logins', 'num_compromised', 'root_shell', 'su_attempted', 
-    'num_root', 'num_file_creations', 'num_shells', 'num_access_files', 
-    'num_outbound_cmds', 'count', 'srv_count', 'serror_rate', 
-    'srv_serror_rate', 'rerror_rate', 'srv_rerror_rate', 'same_srv_rate', 
-    'diff_srv_rate', 'srv_diff_host_rate', 'dst_host_count', 'dst_host_srv_count', 
-    'dst_host_same_srv_rate', 'dst_host_diff_srv_rate', 
-    'dst_host_same_src_port_rate', 'dst_host_srv_diff_host_rate', 
-    'dst_host_serror_rate', 'dst_host_srv_serror_rate', 'dst_host_rerror_rate', 
+    'duration','src_bytes','dst_bytes','wrong_fragment','urgent','hot',
+    'num_failed_logins','num_compromised','root_shell','su_attempted',
+    'num_root','num_file_creations','num_shells','num_access_files',
+    'num_outbound_cmds','count','srv_count','serror_rate',
+    'srv_serror_rate','rerror_rate','srv_rerror_rate','same_srv_rate',
+    'diff_srv_rate','srv_diff_host_rate','dst_host_count','dst_host_srv_count',
+    'dst_host_same_srv_rate','dst_host_diff_srv_rate',
+    'dst_host_same_src_port_rate','dst_host_srv_diff_host_rate',
+    'dst_host_serror_rate','dst_host_srv_serror_rate','dst_host_rerror_rate',
     'dst_host_srv_rerror_rate'
 ]
 
-# Combine encoded categorical variables and numeric features
 train_set = encoded.join(df[numeric_features])
-
-# Multi-class target variable
 multi_y = df['attack_map']
 
-# Split data into training and test sets for multi-class classification
-train_X, test_X, train_y, test_y = train_test_split(train_set, multi_y, test_size=0.2, random_state=1337)
+# ---------------------------
+# SPLIT / TRAIN / EVAL
+# ---------------------------
+train_X, test_X, train_y, test_y = train_test_split(
+    train_set, multi_y, test_size=0.2, random_state=1337
+)
 
-# Further split the training set into separate training and validation sets
-multi_train_X, multi_val_X, multi_train_y, multi_val_y = train_test_split(train_X, train_y, test_size=0.3, random_state=1337)
+multi_train_X, multi_val_X, multi_train_y, multi_val_y = train_test_split(
+    train_X, train_y, test_size=0.3, random_state=1337
+)
 
-# Train RandomForest model for multi-class classification
-rf_model_multi = RandomForestClassifier(random_state=1337)
+rf_model_multi = RandomForestClassifier(random_state=1337, n_estimators=200, n_jobs=-1)
 rf_model_multi.fit(multi_train_X, multi_train_y)
 
-# Predict and evaluate the model on the validation set
-multi_predictions = rf_model_multi.predict(multi_val_X)
-accuracy = accuracy_score(multi_val_y, multi_predictions)
-precision = precision_score(multi_val_y, multi_predictions, average='weighted')
-recall = recall_score(multi_val_y, multi_predictions, average='weighted')
-f1 = f1_score(multi_val_y, multi_predictions, average='weighted')
+val_pred = rf_model_multi.predict(multi_val_X)
+print("\nValidation Set Evaluation:")
+print("Accuracy :", accuracy_score(multi_val_y, val_pred))
+print("Precision:", precision_score(multi_val_y, val_pred, average='weighted', zero_division=0))
+print("Recall   :", recall_score(multi_val_y, val_pred, average='weighted', zero_division=0))
+print("F1-Score :", f1_score(multi_val_y, val_pred, average='weighted', zero_division=0))
+print("\nClassification Report (Validation):")
+print(classification_report(multi_val_y, val_pred,
+      target_names=['Normal','DoS','Probe','Privilege','Access'], zero_division=0))
 
-print(f"Validation Set Evaluation:")
-print(f"Accuracy: {accuracy:.4f}")
-print(f"Precision: {precision:.4f}")
-print(f"Recall: {recall:.4f}")
-print(f"F1-Score: {f1:.4f}")
+test_pred = rf_model_multi.predict(test_X)
+print("\nTest Set Evaluation:")
+print("Accuracy :", accuracy_score(test_y, test_pred))
+print("Precision:", precision_score(test_y, test_pred, average='weighted', zero_division=0))
+print("Recall   :", recall_score(test_y, test_pred, average='weighted', zero_division=0))
+print("F1-Score :", f1_score(test_y, test_pred, average='weighted', zero_division=0))
 
-# Confusion Matrix for validation set
-conf_matrix = confusion_matrix(multi_val_y, multi_predictions)
-class_labels = ['Normal', 'DoS', 'Probe', 'Privilege', 'Access']
-sns.heatmap(conf_matrix, annot=True, fmt='d', cmap='Blues',
-            xticklabels=class_labels,
-            yticklabels=class_labels)
-plt.title('Network Anomaly Detection - Validation Set')
-plt.xlabel('Predicted')
-plt.ylabel('Actual')
-#plt.show()
-
-# Classification report for Validation Set
-print("Classification Report for Validation Set")
-print(classification_report(multi_val_y, multi_predictions, target_names=class_labels))
-
-# Final evaluation on the test set
-
-test_multi_predictions = rf_model_multi.predict(test_X)
-test_accuracy = accuracy_score(test_y, test_multi_predictions)
-test_precision = precision_score(test_y, test_multi_predictions, average='weighted')
-test_recall = recall_score(test_y, test_multi_predictions, average='weighted')
-test_f1 = f1_score(test_y, test_multi_predictions, average='weighted')
-
-print(f"\nTest Set Evaluation:")
-print(f"Accuracy: {test_accuracy:.4f}")
-print(f"Precision: {test_precision:.4f}")
-print(f"Recall: {test_recall:.4f}")
-print(f"F1-Score: {test_f1:.4f}")
-
-# Confusion Matrix for Test Set
-test_conf_matrix = confusion_matrix(test_y, test_multi_predictions)
-sns.heatmap(test_conf_matrix, annot=True, fmt='d', cmap='Blues',
-            xticklabels=class_labels,
-            yticklabels=class_labels)
-
-plt.title('Network Anomaly Detection')
-plt.xlabel('Predicted')
-plt.ylabel('Actual')
-#plt.show
-
-# Classification Report for Test Set
-print("Classification Report for Test Set:")
-print(classification_report(test_y, test_multi_predictions, target_names=class_labels))
-
-# Save the trained model to a file
-model_filename = 'network_anomaly_detection_model.joblib'
+# ---------------------------
+# SAVE MODEL
+# ---------------------------
 joblib.dump(rf_model_multi, model_filename)
+print(f"\n[+] Model saved -> {os.path.abspath(model_filename)}")
 
-print(f"Model saved to {model_filename}")
+# ---------------------------
+# UPLOAD MODEL
+# ---------------------------
+with open(model_filename, "rb") as f:
+    r = requests.post(
+        upload_url,
+        files={"model": (model_filename, f, "application/octet-stream")},
+        timeout=120
+    )
+
+print("\n==> Upload Status:", r.status_code)
+print(r.text[:4000])  # likely HTML; flag may appear in this text
