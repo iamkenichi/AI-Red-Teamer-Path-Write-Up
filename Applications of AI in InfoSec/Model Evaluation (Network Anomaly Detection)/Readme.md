@@ -1,3 +1,1 @@
-- run training_model.py
-- it will generate network_anomaly_detection_model.joblib
-- upload in the target
+run the code in jupyter notebook. it will upload the joblib automatically. don't forget to change the IP to the target
