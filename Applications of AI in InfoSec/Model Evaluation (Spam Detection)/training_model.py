@@ -1,3 +1,4 @@
+!pip -q install nltk pandas numpy scikit-learn joblib requests
 
 import os
 import re
