@@ -6,4 +6,6 @@ Task
 
 Manipulate and upload the training data set in such a way that the trained classifier's accuracy is below 70%.
 
-Download the original training data set.
+Steps:
+
+run the training model and upload the manipulated csv
